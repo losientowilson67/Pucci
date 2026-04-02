@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pucci Finder</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-database-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-auth-compat.js"></script>
+
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; text-align: center; margin: 0; padding: 20px; background-color: #2c3e50; color: white; }
+        h1 { font-size: 3em; margin-bottom: 10px; text-transform: uppercase; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); }
+        #map { height: 600px; width: 90%; max-width: 1200px; margin: 0 auto; border: 4px solid #ecf0f1; border-radius: 15px; cursor: default; }
+        .emoji-marker { font-size: 40px; line-height: 40px; text-align: center; background: none; border: none; }
+        
+        #admin-link { margin-top: 20px; color: rgba(255, 255, 255, 0.2); cursor: pointer; font-size: 12px; transition: 0.3s; }
+        #admin-link:hover { color: rgba(255, 255, 255, 0.8); }
+
+        #admin-panel { display: none; margin: 20px auto; padding: 20px; background: #34495e; border: 2px solid #e74c3c; border-radius: 10px; max-width: 450px; text-align: left; }
+        #login-panel { display: none; margin: 20px auto; padding: 20px; background: #2c3e50; border: 2px solid #3498db; border-radius: 10px; max-width: 300px; }
+        
+        h3 { text-align: center; margin-top: 0; }
+        .btn-action { background: #e74c3c; color: white; border: none; padding: 12px 15px; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 15px; width: 100%; margin-top: 10px;}
+        .btn-action:hover { background: #c0392b; }
+        .input-group { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+        input { padding: 10px; border-radius: 5px; border: 1px solid #ccc; font-size: 14px;}
+        .input-row { display: flex; justify-content: space-between; margin-top: 10px;}
+        .input-row input { width: 45%; }
+        hr { border: 0; height: 1px; background: #7f8c8d; margin: 20px 0; }
+    </style>
+</head>
+<body>
+
+    <h1>Pucci finder</h1>
+    <div id="map"></div>
+    
+    <div id="admin-link" onclick="afficherLogin()">Lo siento Pucci</div>
+
+    <div id="login-panel">
+        <h3>Connexion Admin 🔒</h3>
+        <div class="input-group">
+            <input type="email" id="login-email" placeholder="Email Admin">
+            <input type="password" id="login-password" placeholder="Mot de passe">
+        </div>
+        <button class="btn-action" onclick="connecterAdmin()" style="background: #3498db;">Se connecter</button>
+        <button class="btn-action" onclick="fermerTout()" style="background: #95a5a6;">Annuler</button>
+    </div>
+
+    <div id="admin-panel">
+        <h3>Panneau Secret 🐆 <br><span style="font-size: 12px; color: #2ecc71;">(Connecté et Sécurisé)</span></h3>
+        <p><b>1.</b> Clique n'importe où sur la carte ci-dessus.</p>
+        <hr>
+        <p><b>2. Par coordonnées :</b></p>
+        <div class="input-row">
+            <input type="number" id="input-lat" placeholder="Latitude" step="any">
+            <input type="number" id="input-lng" placeholder="Longitude" step="any">
+        </div>
+        <button class="btn-action" onclick="updateManually()" style="background: #f39c12;">✅ Valider</button>
+        <hr>
+        <button class="btn-action" onclick="updateToMyLocation()">📍 Mettre à ma position actuelle</button>
+        <br><br>
+        <button class="btn-action" onclick="deconnecterAdmin()" style="background: #95a5a6;">❌ Se déconnecter</button>
+    </div>
+
+    <script>
+        // TES CLÉS FIREBASE
+        const firebaseConfig = {
+            apiKey: "AIzaSyAyYELnsGr0NFnQHP0uzDXqlYkyDM0Ue7k",
+            authDomain: "puccifinder.firebaseapp.com",
+            databaseURL: "https://puccifinder-default-rtdb.firebaseio.com",
+            projectId: "puccifinder",
+            storageBucket: "puccifinder.firebasestorage.app",
+            messagingSenderId: "968458927177",
+            appId: "1:968458927177:web:1e56bab0f6c9134e021398",
+            measurementId: "G-3Z4QR0GL1Y"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+        const auth = firebase.auth(); // On active l'outil d'authentification
+
+        var map = L.map('map').setView([48.4322, -68.5239], 5);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap &copy; CARTO'
+        }).addTo(map);
+
+        var cougarIcon = L.divIcon({ html: '🐆', className: 'emoji-marker', iconSize: [40, 40], iconAnchor: [20, 20] });
+        var marker = L.marker([48.4322, -68.5239], {icon: cougarIcon}).addTo(map);
+
+        // Lecture de Firebase (Toujours public grâce à .read: true)
+        db.ref('pucci_location').on('value', (snapshot) => {
+            const data = snapshot.val();
+            if (data) marker.setLatLng([data.lat, data.lng]);
+        });
+        
+        let modeAdminActif = false;
+
+        function afficherLogin() {
+            document.getElementById('admin-link').style.display = 'none';
+            document.getElementById('login-panel').style.display = 'block';
+        }
+
+        function fermerTout() {
+            document.getElementById('login-panel').style.display = 'none';
+            document.getElementById('admin-panel').style.display = 'none';
+            document.getElementById('admin-link').style.display = 'block';
+            document.getElementById('map').style.cursor = 'default';
+        }
+
+        // VRAIE SÉCURITÉ : Connexion avec Firebase Auth
+        function connecterAdmin() {
+            const email = document.getElementById('login-email').value;
+            const mdp = document.getElementById('login-password').value;
+
+            auth.signInWithEmailAndPassword(email, mdp)
+                .then((userCredential) => {
+                    // Connexion réussie !
+                    modeAdminActif = true;
+                    document.getElementById('login-panel').style.display = 'none';
+                    document.getElementById('admin-panel').style.display = 'block';
+                    document.getElementById('map').style.cursor = 'crosshair'; // Change le curseur
+                    
+                    // On vide les champs de mot de passe par sécurité
+                    document.getElementById('login-email').value = '';
+                    document.getElementById('login-password').value = '';
+                })
+                .catch((error) => {
+                    alert("Erreur de connexion : Mauvais email ou mot de passe.");
+                });
+        }
+
+        function deconnecterAdmin() {
+            auth.signOut().then(() => {
+                modeAdminActif = false;
+                alert("Déconnecté avec succès.");
+                fermerTout();
+            });
+        }
+
+        // Le reste des fonctions de déplacement (identiques)
+        map.on('click', function(e) {
+            if (modeAdminActif) {
+                if(confirm("Veux-tu déplacer Pucci ici ?")) {
+                    enregistrerPosition(e.latlng.lat, e.latlng.lng);
+                }
+            }
+        });
+
+        function updateManually() {
+            var lat = parseFloat(document.getElementById('input-lat').value);
+            var lng = parseFloat(document.getElementById('input-lng').value);
+            if (isNaN(lat) || isNaN(lng)) return alert("Chiffres invalides.");
+            enregistrerPosition(lat, lng);
+            document.getElementById('input-lat').value = ''; document.getElementById('input-lng').value = '';
+        }
+
+        function updateToMyLocation() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition((position) => {
+                    enregistrerPosition(position.coords.latitude, position.coords.longitude);
+                }, () => alert("Impossible d'obtenir ta position."));
+            }
+        }
+
+        function enregistrerPosition(latitude, longitude) {
+            db.ref('pucci_location').set({ lat: latitude, lng: longitude })
+            .then(() => map.setView([latitude, longitude], 13))
+            .catch((error) => alert("Firebase a bloqué l'action (Accès refusé) ! " + error.message));
+        }
+    </script>
+</body>
+</html>
